@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0c" />
+    <meta name="description" content="Agenda — task list, day planner and project kanban in one dark, quiet screen. Your current task first, everything else a swipe away. Speaks iCalendar/CalDAV, controlled by voice." />
+    <link rel="icon" href="manifest/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="manifest/icon.svg" />
+    <title>Agenda</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript><p style="padding:2rem;font-family:sans-serif">Agenda needs JavaScript. It is a progressive web app that stores everything in your browser.</p></noscript>
+    <script type="module" src="src/main.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./service-worker.js').catch(() => {});
+        });
+      }
+    </script>
+  </body>
+</html>

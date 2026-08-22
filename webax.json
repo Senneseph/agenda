@@ -1,0 +1,39 @@
+{
+  "$comment": "Agenda — a WebAX application. Specs are the contract; the app is a thin, replaceable client.",
+  "name": "agenda",
+  "version": "1.0.0",
+  "build": {
+    "output_dir": "dist",
+    "bundle": false,
+    "minify": false
+  },
+  "development": {
+    "server": {
+      "port": 8000,
+      "https": false,
+      "note": "Serve from the meta-project root so ../jcule and ../jellicule resolve (same as pet-store)."
+    }
+  },
+  "specs": {
+    "api": "specs/agenda-api.json",
+    "workflow": "specs/workflow.json",
+    "voice": "specs/voice-commands.md"
+  },
+  "integration": {
+    "comlink": {
+      "expose": [
+        "agenda.now",
+        "agenda.tasks.list",
+        "agenda.tasks.create",
+        "agenda.tasks.complete",
+        "agenda.events.list",
+        "agenda.events.create",
+        "agenda.projects.list",
+        "agenda.cards.list",
+        "agenda.cards.schedule",
+        "agenda.commands.run"
+      ],
+      "connect": ["storage-service", "notification-service"]
+    }
+  }
+}

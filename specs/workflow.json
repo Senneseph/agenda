@@ -1,0 +1,53 @@
+{
+  "$comment": "Agenda business-rules transaction agreements (decision trees). Consumed by jcule createWorkflow. Two machines: 'task' (daily task list lifecycle) and 'card' (kanban board lifecycle).",
+
+  "task": {
+    "states": ["open", "done"],
+    "initial": "open",
+    "transitions": [
+      { "from": "open", "to": "done", "on": "complete" },
+      { "from": "done", "to": "open", "on": "reopen" }
+    ],
+    "$comment": "Scheduling (date/time) and snoozing mutate fields, not status. A task is 'open' until completed. Completing a card auto-completes its linked open tasks."
+  },
+
+  "card": {
+    "states": ["backlog", "ready", "inprogress", "review", "done"],
+    "initial": "backlog",
+    "transitions": [
+      { "from": "backlog",   "to": "ready",      "on": "advance" },
+      { "from": "ready",     "to": "inprogress", "on": "advance" },
+      { "from": "inprogress","to": "review",      "on": "advance" },
+      { "from": "review",    "to": "done",        "on": "advance" },
+      { "from": "ready",     "to": "backlog",     "on": "back" },
+      { "from": "inprogress","to": "ready",       "on": "back" },
+      { "from": "review",    "to": "inprogress",  "on": "back" },
+      { "from": "done",      "to": "review",      "on": "reopen" },
+      { "from": "inprogress","to": "done",        "on": "finish" },
+      { "from": "ready",     "to": "done",        "on": "skip" },
+      { "from": "backlog",   "to": "done",        "on": "skip" },
+
+      { "from": "backlog",   "to": "ready",      "on": "move" },
+      { "from": "backlog",   "to": "inprogress", "on": "move" },
+      { "from": "backlog",   "to": "review",     "on": "move" },
+      { "from": "backlog",   "to": "done",       "on": "move" },
+      { "from": "ready",     "to": "backlog",    "on": "move" },
+      { "from": "ready",     "to": "inprogress", "on": "move" },
+      { "from": "ready",     "to": "review",     "on": "move" },
+      { "from": "ready",     "to": "done",       "on": "move" },
+      { "from": "inprogress","to": "backlog",    "on": "move" },
+      { "from": "inprogress","to": "ready",      "on": "move" },
+      { "from": "inprogress","to": "review",     "on": "move" },
+      { "from": "inprogress","to": "done",       "on": "move" },
+      { "from": "review",    "to": "backlog",    "on": "move" },
+      { "from": "review",    "to": "ready",      "on": "move" },
+      { "from": "review",    "to": "inprogress", "on": "move" },
+      { "from": "review",    "to": "done",       "on": "move" },
+      { "from": "done",      "to": "backlog",    "on": "move" },
+      { "from": "done",      "to": "ready",      "on": "move" },
+      { "from": "done",      "to": "inprogress", "on": "move" },
+      { "from": "done",      "to": "review",     "on": "move" }
+    ],
+    "$comment": "advance/back/finish/skip are the labelled moves (for voice + buttons); 'move' covers every pair so board drags always work. Cards carry scheduledDate + linked tasks; scheduling is a field mutation, not a state change. Moving to 'done' completes linked open tasks."
+  }
+}

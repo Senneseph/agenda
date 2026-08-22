@@ -1,0 +1,46 @@
+{
+  "name": "Agenda — task list, planner & kanban",
+  "short_name": "Agenda",
+  "description": "Your current task first, everything else a swipe away. Task list, day planner, kanban — with real calendar sync (CalDAV / Google / ICS) and a voice command API.",
+  "start_url": "index.html",
+  "scope": "/agenda/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "icons": [
+    {
+      "src": "manifest/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Today",
+      "short_name": "Today",
+      "url": "index.html#tasks",
+      "icons": [{ "src": "manifest/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "New task",
+      "short_name": "New task",
+      "url": "index.html#tasks?new=1",
+      "icons": [{ "src": "manifest/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ],
+  "webax": {
+    "version": "1.0.0",
+    "publisher": "github.com/Senneseph",
+    "package_id": "agenda",
+    "permissions": ["storage", "network", "notifications", "microphone"],
+    "dependencies": {
+      "@net.webax/jcule": "^0.1.0",
+      "@net.webax/jellicule": "^0.2.0"
+    },
+    "distribution": {
+      "repo": "https://github.com/Senneseph/agenda"
+    }
+  }
+}

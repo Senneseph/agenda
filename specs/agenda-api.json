@@ -1,0 +1,841 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Agenda API",
+    "version": "1.0.0",
+    "description": "The Agenda API — a task list + calendar + project-management surface designed to be driven by humans, LLMs, and voice agents alike.\n\nEverything is a standard: recurrence uses RFC 5545 RRULE strings, calendar sync uses CalDAV (RFC 4791) / iCalendar (RFC 5545), and dates are YYYY-MM-DD while datetimes are local ISO-8601 (YYYY-MM-DDTHH:MM:SS).\n\nThe pipeline: a **card** (kanban) can be **scheduled** for a date → the API creates a linked **task** in that day's task list → the task (and a work block) appears in the **planner** → on the day, **/now** reports it as the current focus.\n\nFast paths for agents:\n- GET /now — what should the human be doing right now?\n- POST /commands — natural-language command gateway (voice/text).\n- POST /tasks, POST /events, POST /projects, POST /projects/{id}/cards — create things.\n- POST /cards/{id}/schedule — the kanban→today pipeline.\n\nThe in-browser build implements this spec against local storage; the contract is backend-agnostic so a real server (e.g. CyberdeckOS) can be swapped in without touching the UI."
+  },
+  "servers": [
+    { "url": "/agenda/api", "description": "In-app local API (this build)" },
+    { "url": "https://agenda.example.com/api", "description": "Future hosted backend" }
+  ],
+  "tags": [
+    { "name": "now", "description": "Current focus — the lock screen contract" },
+    { "name": "tasks", "description": "Daily task list" },
+    { "name": "events", "description": "Calendar events (RFC 5545 recurrence)" },
+    { "name": "projects", "description": "Projects and their kanban boards" },
+    { "name": "cards", "description": "Kanban cards (work items)" },
+    { "name": "integrations", "description": "CalDAV / Google Calendar / ICS connectors" },
+    { "name": "commands", "description": "Natural-language command gateway" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["now"],
+        "summary": "Health + schema version",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } }
+          }
+        }
+      }
+    },
+
+    "/now": {
+      "get": {
+        "tags": ["now"],
+        "summary": "What should the human be doing right now?",
+        "description": "Returns the current focus: a task whose time window covers now, else a calendar event happening now (or starting within 15 min — current.kind='event'), else the next scheduled task, the first open task of the day, a carried-over task, or 'all clear'. The lock screen polls this.",
+        "operationId": "getNow",
+        "parameters": [
+          { "name": "at", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "Evaluate at this instant (default now)" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current focus",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NowResponse" } } }
+          }
+        }
+      }
+    },
+
+    "/tasks": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "List tasks",
+        "operationId": "listTasks",
+        "parameters": [
+          { "name": "date", "in": "query", "schema": { "type": "string", "format": "date" }, "description": "Filter to one day (YYYY-MM-DD)" },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["open", "done"] }, "description": "Filter by status (default: all)" },
+          { "name": "source", "in": "query", "schema": { "type": "string" }, "description": "Filter by source, e.g. card:<id>" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tasks",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Create a task",
+        "description": "Quick note: POST {\"title\":\"call mom\",\"date\":\"2026-08-22\"}. Scheduled: also pass time (HH:MM), durationMin, reminderMin.",
+        "operationId": "createTask",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } }
+          }
+        }
+      }
+    },
+
+    "/tasks/{id}": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "Get a task",
+        "operationId": "getTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Task", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } } },
+          "404": { "description": "Not found" }
+        }
+      },
+      "patch": {
+        "tags": ["tasks"],
+        "summary": "Update a task",
+        "operationId": "updateTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaskInput" } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["tasks"],
+        "summary": "Delete a task",
+        "operationId": "deleteTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" }
+        }
+      }
+    },
+
+    "/tasks/{id}/complete": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Complete a task (workflow: open → done)",
+        "operationId": "completeTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } } },
+          "409": { "description": "Transition not allowed" }
+        }
+      }
+    },
+
+    "/tasks/{id}/reopen": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Reopen a completed task",
+        "operationId": "reopenTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "$ref": "#/components/schemas/Task" } } }
+        }
+      }
+    },
+
+    "/tasks/{id}/reschedule": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "Move a task to another day/time (keeps it open)",
+        "operationId": "rescheduleTask",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "time": { "type": "string", "example": "18:00", "nullable": true },
+              "durationMin": { "type": "integer", "nullable": true },
+              "reminderMin": { "type": "integer", "nullable": true }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } } }
+        }
+      }
+    },
+
+    "/events": {
+      "get": {
+        "tags": ["events"],
+        "summary": "List events in a range (recurring events expanded)",
+        "description": "Recurring events are expanded per their RRULE. Instances carry an `instanceStart`; edits to a single instance detach it (the series gets an EXDATE).",
+        "operationId": "listEvents",
+        "parameters": [
+          { "name": "start", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Expanded instances",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/EventInstance" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["events"],
+        "summary": "Create an event",
+        "operationId": "createEvent",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EventInput" } } }
+        },
+        "responses": {
+          "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Event" } } } }
+        }
+      }
+    },
+
+    "/events/{id}": {
+      "get": {
+        "tags": ["events"],
+        "summary": "Get an event (master)",
+        "operationId": "getEvent",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Event", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Event" } } } }
+        }
+      },
+      "patch": {
+        "tags": ["events"],
+        "summary": "Update an event (or a single instance via ?instance=)",
+        "operationId": "updateEvent",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "instance", "in": "query", "schema": { "type": "string", "format": "date-time" }, "description": "Instance start to edit only this occurrence (detaches it)" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EventInput" } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Event" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["events"],
+        "summary": "Delete an event (or one instance via ?instance= — adds EXDATE)",
+        "operationId": "deleteEvent",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "instance", "in": "query", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "204": { "description": "Deleted" }
+        }
+      }
+    },
+
+    "/projects": {
+      "get": {
+        "tags": ["projects"],
+        "summary": "List projects",
+        "operationId": "listProjects",
+        "responses": {
+          "200": {
+            "description": "Projects",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["projects"],
+        "summary": "Create a project",
+        "operationId": "createProject",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectInput" } } }
+        },
+        "responses": {
+          "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }
+        }
+      }
+    },
+
+    "/projects/{id}": {
+      "get": {
+        "tags": ["projects"],
+        "summary": "Get a project",
+        "operationId": "getProject",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }
+        }
+      },
+      "patch": {
+        "tags": ["projects"],
+        "summary": "Update a project",
+        "operationId": "updateProject",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectInput" } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["projects"],
+        "summary": "Delete a project (and its cards)",
+        "operationId": "deleteProject",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" }
+        }
+      }
+    },
+
+    "/projects/{id}/cards": {
+      "get": {
+        "tags": ["cards"],
+        "summary": "List cards on a project board",
+        "operationId": "listCards",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cards",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Card" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["cards"],
+        "summary": "Create a card on a project board",
+        "operationId": "createCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CardInput" } } }
+        },
+        "responses": {
+          "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Card" } } } }
+        }
+      }
+    },
+
+    "/cards/{id}": {
+      "get": {
+        "tags": ["cards"],
+        "summary": "Get a card",
+        "operationId": "getCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Card", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Card" } } } }
+        }
+      },
+      "patch": {
+        "tags": ["cards"],
+        "summary": "Update a card (fields; use POST /cards/{id}/move to change status)",
+        "operationId": "updateCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CardInput" } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Card" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["cards"],
+        "summary": "Delete a card (also deletes its linked tasks)",
+        "operationId": "deleteCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "204": { "description": "Deleted" }
+        }
+      }
+    },
+
+    "/cards/{id}/move": {
+      "post": {
+        "tags": ["cards"],
+        "summary": "Move a card between columns (workflow-enforced)",
+        "operationId": "moveCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["to"],
+            "properties": {
+              "to": { "type": "string", "enum": ["backlog", "ready", "inprogress", "review", "done"] },
+              "event": { "type": "string", "enum": ["advance", "back", "finish", "skip", "move"], "description": "Workflow event label (default: move)" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Moved. If the card moved to done, its linked open tasks are completed.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Card" } } }
+          },
+          "409": { "description": "Transition not allowed by workflow" }
+        }
+      }
+    },
+
+    "/cards/{id}/schedule": {
+      "post": {
+        "tags": ["cards"],
+        "summary": "Schedule a card for a date → creates/updates a linked task in that day's task list",
+        "description": "The kanban→today pipeline. Sets scheduledDate (+ optional start/duration) and upserts a linked task (source 'card:<id>'). The work block also appears in the planner. Pass scheduledDate: null (or DELETE) to unschedule.",
+        "operationId": "scheduleCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "properties": {
+              "date": { "type": "string", "format": "date", "example": "2026-08-25" },
+              "start": { "type": "string", "example": "10:00", "nullable": true },
+              "minutes": { "type": "integer", "example": 60, "nullable": true },
+              "reminderMin": { "type": "integer", "example": 15, "nullable": true }
+            },
+            "required": ["date"]
+          } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Scheduled",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": {
+                "card": { "$ref": "#/components/schemas/Card" },
+                "task": { "$ref": "#/components/schemas/Task" },
+                "created": { "type": "boolean" }
+              }
+            } } }
+          }
+        }
+      }
+    },
+
+    "/cards/{id}/unschedule": {
+      "post": {
+        "tags": ["cards"],
+        "summary": "Remove a card's schedule (deletes its linked tasks)",
+        "operationId": "unscheduleCard",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Unscheduled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Card" } } } }
+        }
+      }
+    },
+
+    "/integrations": {
+      "get": {
+        "tags": ["integrations"],
+        "summary": "List calendar integrations",
+        "operationId": "listIntegrations",
+        "responses": {
+          "200": {
+            "description": "Integrations",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Integration" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["integrations"],
+        "summary": "Add an integration (caldav | google | ics)",
+        "description": "CalDAV: {type:'caldav', config:{url, username, password, calendarPath?}}. Google: {type:'google', config:{clientId, accessToken?}}. ICS: {type:'ics', config:{url?}} — or upload via POST /ics/import.",
+        "operationId": "addIntegration",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationInput" } } }
+        },
+        "responses": {
+          "201": { "description": "Added", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } }
+        }
+      }
+    },
+
+    "/integrations/{id}": {
+      "delete": {
+        "tags": ["integrations"],
+        "summary": "Remove an integration (keeps synced events, they become local)",
+        "operationId": "removeIntegration",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "204": { "description": "Removed" } }
+      },
+      "patch": {
+        "tags": ["integrations"],
+        "summary": "Enable/disable an integration",
+        "operationId": "updateIntegration",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "properties": { "enabled": { "type": "boolean" }, "config": { "type": "object" } }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } }
+        }
+      }
+    },
+
+    "/integrations/{id}/sync": {
+      "post": {
+        "tags": ["integrations"],
+        "summary": "Sync a calendar integration now",
+        "operationId": "syncIntegration",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Sync result",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": {
+                "pulled": { "type": "integer" },
+                "pushed": { "type": "integer" },
+                "errors": { "type": "array", "items": { "type": "string" } },
+                "at": { "type": "string", "format": "date-time" }
+              }
+            } } }
+          },
+          "501": { "description": "Not implemented for this type in this build" }
+        }
+      }
+    },
+
+    "/ics/export": {
+      "get": {
+        "tags": ["integrations"],
+        "summary": "Export events as an iCalendar (.ics) file",
+        "operationId": "exportIcs",
+        "parameters": [
+          { "name": "start", "in": "query", "schema": { "type": "string", "format": "date" } },
+          { "name": "end", "in": "query", "schema": { "type": "string", "format": "date" } },
+          { "name": "download", "in": "query", "schema": { "type": "boolean", "default": true } }
+        ],
+        "responses": {
+          "200": { "description": "iCalendar text/calendar body" }
+        }
+      }
+    },
+
+    "/ics/import": {
+      "post": {
+        "tags": ["integrations"],
+        "summary": "Import events from an iCalendar (.ics) upload",
+        "operationId": "importIcs",
+        "requestBody": {
+          "required": true,
+          "content": { "text/calendar": { "schema": { "type": "string" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Import result",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": {
+                "imported": { "type": "integer" },
+                "events": { "type": "array", "items": { "$ref": "#/components/schemas/Event" } }
+              }
+            } } }
+          }
+        }
+      }
+    },
+
+    "/commands": {
+      "post": {
+        "tags": ["commands"],
+        "summary": "Natural-language command gateway (voice/text for agents)",
+        "description": "Send a plain-language command; the gateway parses it into an API operation and executes it. Examples:\n- \"add task call mom tomorrow at 6pm with a reminder\"\n- \"what am I doing today\"\n- \"schedule a meeting friday 2-3pm recurring weekly\"\n- \"new project taxes; add card file return; schedule it for next tuesday\"\n- \"mark task done\" (last referenced task)\n- \"move the taxes card to in progress\"\n- \"export my calendar\"\nReturns the intent, a human summary, and the executed result. An LLM may either call this endpoint or the individual REST endpoints directly.",
+        "operationId": "runCommand",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+              "command": { "type": "string", "example": "add task call mom tomorrow at 6pm with a reminder" },
+              "date": { "type": "string", "format": "date", "description": "Override 'today' context" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Executed",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommandResult" } } }
+          },
+          "400": { "description": "Unparseable — result.intent = 'unknown'" }
+        }
+      }
+    }
+  },
+
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["ok"] },
+          "schemaVersion": { "type": "integer" },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "tasks": { "type": "integer" },
+              "events": { "type": "integer" },
+              "projects": { "type": "integer" },
+              "cards": { "type": "integer" },
+              "integrations": { "type": "integer" }
+            }
+          }
+        }
+      },
+
+      "Task": {
+        "type": "object",
+        "required": ["id", "title", "date", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string", "description": "The task text (a note is just a task without a time)" },
+          "notes": { "type": "string" },
+          "date": { "type": "string", "format": "date", "description": "The day this task lives on" },
+          "time": { "type": "string", "example": "18:00", "nullable": true, "description": "Scheduled time (HH:MM)" },
+          "durationMin": { "type": "integer", "nullable": true },
+          "reminderMin": { "type": "integer", "nullable": true, "description": "Minutes before time to remind" },
+          "status": { "type": "string", "enum": ["open", "done"] },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 3, "default": 1 },
+          "source": { "type": "string", "nullable": true, "example": "card:c9f3", "description": "Where this task came from: 'card:<id>' links to a kanban card" },
+          "order": { "type": "integer" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+
+      "TaskInput": {
+        "type": "object",
+        "required": ["title", "date"],
+        "properties": {
+          "title": { "type": "string" },
+          "notes": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "time": { "type": "string", "nullable": true },
+          "durationMin": { "type": "integer", "nullable": true },
+          "reminderMin": { "type": "integer", "nullable": true },
+          "priority": { "type": "integer" }
+        }
+      },
+
+      "Event": {
+        "type": "object",
+        "required": ["id", "title", "start", "end"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "start": { "type": "string", "format": "date-time", "description": "Local ISO; all-day events use date at 00:00 with allDay:true" },
+          "end": { "type": "string", "format": "date-time" },
+          "allDay": { "type": "boolean", "default": false },
+          "rrule": { "type": "string", "example": "FREQ=WEEKLY;BYDAY=MO,WE,FR", "description": "RFC 5545 recurrence rule" },
+          "exdates": { "type": "array", "items": { "type": "string", "format": "date-time" }, "description": "Excluded instance starts (RFC 5545 EXDATE)" },
+          "overrides": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/EventOverride" },
+            "description": "Detached single-instance edits (a new series started from one instance)"
+          },
+          "reminders": { "type": "array", "items": { "type": "object", "properties": { "minutes": { "type": "integer" } } } },
+          "status": { "type": "string", "enum": ["confirmed", "cancelled"] },
+          "color": { "type": "string" },
+          "source": { "type": "string", "enum": ["local", "google", "caldav", "ics"] },
+          "externalId": { "type": "string", "nullable": true },
+          "integrationId": { "type": "string", "nullable": true },
+          "syncKey": { "type": "string", "nullable": true }
+        }
+      },
+
+      "EventInstance": {
+        "type": "object",
+        "description": "One expanded occurrence of an event",
+        "properties": {
+          "eventId": { "type": "string" },
+          "instanceStart": { "type": "string", "format": "date-time" },
+          "start": { "type": "string", "format": "date-time" },
+          "end": { "type": "string", "format": "date-time" },
+          "allDay": { "type": "boolean" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "color": { "type": "string" },
+          "source": { "type": "string" },
+          "isException": { "type": "boolean" }
+        }
+      },
+
+      "EventOverride": {
+        "type": "object",
+        "properties": {
+          "originalStart": { "type": "string", "format": "date-time" },
+          "title": { "type": "string" },
+          "start": { "type": "string", "format": "date-time" },
+          "end": { "type": "string", "format": "date-time" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "cancelled": { "type": "boolean" }
+        }
+      },
+
+      "EventInput": {
+        "type": "object",
+        "required": ["title", "start", "end"],
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "start": { "type": "string", "format": "date-time" },
+          "end": { "type": "string", "format": "date-time" },
+          "allDay": { "type": "boolean" },
+          "rrule": { "type": "string", "nullable": true },
+          "reminders": { "type": "array", "items": { "type": "object", "properties": { "minutes": { "type": "integer" } } } },
+          "color": { "type": "string" }
+        }
+      },
+
+      "Project": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "color": { "type": "string" },
+          "archived": { "type": "boolean", "default": false },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "cardCounts": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Computed: open cards per column"
+          }
+        }
+      },
+
+      "ProjectInput": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "color": { "type": "string" }
+        }
+      },
+
+      "Card": {
+        "type": "object",
+        "required": ["id", "projectId", "title", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "projectId": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["backlog", "ready", "inprogress", "review", "done"] },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 3, "default": 1 },
+          "estimateMin": { "type": "integer", "nullable": true },
+          "scheduledDate": { "type": "string", "format": "date", "nullable": true },
+          "scheduledStart": { "type": "string", "nullable": true, "example": "10:00" },
+          "scheduledMinutes": { "type": "integer", "nullable": true },
+          "scheduledDone": { "type": "boolean", "description": "Its linked task for the day is done" },
+          "order": { "type": "integer" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+
+      "CardInput": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "labels": { "type": "array", "items": { "type": "string" } },
+          "priority": { "type": "integer" },
+          "estimateMin": { "type": "integer" },
+          "status": { "type": "string", "enum": ["backlog", "ready", "inprogress", "review", "done"], "description": "Initial column (default backlog)" }
+        }
+      },
+
+      "Integration": {
+        "type": "object",
+        "required": ["id", "type", "name", "enabled"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string", "enum": ["caldav", "google", "ics"] },
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "config": {
+            "type": "object",
+            "properties": {
+              "url": { "type": "string", "description": "CalDAV base URL" },
+              "username": { "type": "string" },
+              "calendarPath": { "type": "string", "description": "e.g. /dav/calendars/user/primary/" },
+              "clientId": { "type": "string", "description": "Google OAuth client ID" },
+              "calendarId": { "type": "string", "description": "Google calendar id (default 'primary')" }
+            }
+          },
+          "lastSync": { "type": "string", "format": "date-time", "nullable": true },
+          "lastError": { "type": "string", "nullable": true }
+        }
+      },
+
+      "IntegrationInput": {
+        "type": "object",
+        "required": ["type", "name"],
+        "properties": {
+          "type": { "type": "string", "enum": ["caldav", "google", "ics"] },
+          "name": { "type": "string" },
+          "config": { "type": "object" }
+        }
+      },
+
+      "NowResponse": {
+        "type": "object",
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "day": { "type": "string", "format": "date" },
+          "context": { "type": "string", "enum": ["focus", "next", "carryover", "clear"] },
+          "current": { "$ref": "#/components/schemas/Task", "description": "The task to do right now — or an event-shaped object {kind:'event', eventId, title, startTime, endTime, date} when a calendar event is happening or imminent. Null when clear." },
+          "nextUp": { "type": "array", "items": { "$ref": "#/components/schemas/Task" }, "description": "Following tasks, capped at 3" },
+          "dayOpen": { "type": "integer", "description": "Open tasks today (incl. current)" },
+          "dayDone": { "type": "integer" },
+          "label": { "type": "string", "description": "Human one-liner, e.g. 'Right now: call mom (6:00pm)' or 'All clear for today'" }
+        }
+      },
+
+      "CommandResult": {
+        "type": "object",
+        "required": ["ok", "intent", "summary"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "intent": { "type": "string", "example": "task.create" },
+          "summary": { "type": "string", "description": "Human confirmation, e.g. 'Added “call mom” to Tuesday 2026-08-25 at 18:00 with a reminder'" },
+          "result": { "type": "object", "description": "The API operation result" },
+          "error": { "type": "string", "nullable": true }
+        }
+      }
+    }
+  }
+}

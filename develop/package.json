@@ -1,0 +1,18 @@
+{
+  "name": "agenda",
+  "version": "1.0.0",
+  "description": "Agenda — task list, day planner & kanban. A WebAX application with a spec-driven API for LLM/voice control and standards-based calendar sync.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/smoke.mjs && node tests/boot.mjs && node tests/views.mjs",
+    "test:smoke": "node tests/smoke.mjs",
+    "test:boot": "node tests/boot.mjs",
+    "test:views": "node tests/views.mjs",
+    "start": "python3 -m http.server 8000"
+  },
+  "dependencies": {
+    "@net.webax/jcule": "*",
+    "@net.webax/jellicule": "*"
+  }
+}
